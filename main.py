@@ -1,58 +1,76 @@
-import pandas as pd
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from typing import List
 
-def get_title_from_index(index):
-	return dd[dd.index == index]["title"].values[0]
+import databases
 
-def get_index_from_title(title):
-	return dd[dd.title == title]["index"].values[0]
-dd = pd.read_csv('companies-17-12-2021.xls')
-dd['title']=dd['Organization Name']
-dd['index']=dd.index
-features=['Industries','Headquarters Location','Full Description']
-def combined_features(row):
-    try:
-        return row['Industries']+" "+ row['Headquarters Location']+" "+row['Full Description']
-    except:
-        return "Error:", row
-
-for feature in features:
-    dd[feature]=dd[feature].fillna('')
-
-dd['combined_features']=dd.apply(combined_features, axis=1)
-cv=CountVectorizer()
-count_matrix=cv.fit_transform(dd["combined_features"])
-cosine_sim=cosine_similarity(count_matrix)
-
-
+import sqlalchemy
 
 from fastapi import FastAPI
-from typing import List
 from pydantic import BaseModel
+
+
+DATABASE_URL = "postgres://pujqcrbbdgsgim:1340fceb0baaab2b2682f54f48a5c1bb5fa48099f7616138f51e588671b3e50b@ec2-52-45-183-77.compute-1.amazonaws.com:5432/da79q554o4g8gh"
+
+database = databases.Database(DATABASE_URL)
+
+
+metadata = sqlalchemy.MetaData()
+
+
+
+notes = sqlalchemy.Table(
+
+    "notes",
+
+    metadata,
+
+    sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+
+    sqlalchemy.Column("text", sqlalchemy.String),
+
+    sqlalchemy.Column("completed", sqlalchemy.Boolean),
+
+)
+
+
+
+engine = sqlalchemy.create_engine(
+    DATABASE_URL
+)
+metadata.create_all(engine)
+
+
+class NoteIn(BaseModel):
+    text: str
+    completed: bool
+
+
+class Note(BaseModel):
+    id: int
+    text: str
+    completed: bool
+
 
 app = FastAPI()
 
 
-@app.get("/")
-async def read_root():
-    return {"Bienvenue à notre nouveau systeme de recommendation basé sur CRUNCHBASE"}
+@app.on_event("startup")
+async def startup():
+    await database.connect()
 
 
-class Companies_similaires(BaseModel):
-    content: List = []
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
 
-@app.post("/companies_similaires/{companyName}")
-async def create_item(companyName: str ,companies_similaires: Companies_similaires):
-    company_index = get_index_from_title(companyName)
-    similar_company = list(enumerate(cosine_sim[company_index]))
-    sorted_similar_company = sorted(similar_company, key=lambda x: x[1], reverse=True)
-    i = 0
-    for x in sorted_similar_company:
-        companies_similaires.content.append(get_title_from_index(x[0]))
-        i = i + 1
-        if i > 15:
-             break
 
-    return {"companies_similaires":companies_similaires}
+@app.get("/notes/", response_model=List[Note])
+async def read_notes():
+    query = notes.select()
+    return await database.fetch_all(query)
 
+
+@app.post("/notes/", response_model=Note)
+async def create_note(note: NoteIn):
+    query = notes.insert().values(text=note.text, completed=note.completed)
+    last_record_id = await database.execute(query)
+    return {**note.dict(), "id": last_record_id}
